@@ -1,0 +1,538 @@
+# Provider Guide — Windows
+
+You are lending a Windows machine to the Vyomanaut demo network. Your machine stores
+encrypted pieces of someone else's file and proves, on demand, that it still has them.
+
+You need two things from the operator. Ask for them when you get there:
+
+- the **coordinator address** — looks like `http://10.35.114.52:8080` (a `10.x` address —
+  ZeroTier assigns these automatically once you join)
+- a **6-digit code** — only the first time you join
+
+> Your machine never sees a filename and never holds a readable copy of anything. What it
+> stores looks like random noise, because it is.
+
+---
+
+## Part 1 — Setting up Windows
+
+Do this once. Skip anything you already have.
+
+### 1.1 Package installer
+
+```pwsh
+winget --version
+```
+
+> Expect v1.2.xxxx
+
+### 1.2 Git
+
+```pwsh
+git --version
+```
+
+> If absent, install from <https://git-scm.com/download/win>
+Or
+
+```bash
+winget install --id Git.Git -e --source winget
+```
+
+### 1.3 PowerShell 7
+
+```pwsh
+$PSVersionTable.PSVersion
+```
+
+> Expect `Major` ≥ 7
+> If not:
+
+```pwsh
+winget install --id Microsoft.PowerShell -e --source winget
+```
+
+> Open a new terminal called **pwsh** from the Windows button
+> Check the version again
+
+```pwsh
+$PSVersionTable.PSVersion
+```
+
+> Then fix the path:
+
+```pwsh
+$profileDir = Split-Path $PROFILE
+
+New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+
+$pathBlock = @'
+# --- Windows environment PATH ---
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
+
+$env:Path = "$machinePath;$userPath"
+# --- End Windows environment PATH ---
+'@
+
+if (-not (Test-Path $PROFILE)) {
+    New-Item -ItemType File -Path $PROFILE -Force | Out-Null
+}
+
+$profileContent = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
+
+if ($profileContent -notmatch '# --- Windows environment PATH ---') {
+    Add-Content -Path $PROFILE -Value "`r`n$pathBlock"
+}
+```
+
+**Close pwsh. From here onwards run every command inside pwsh.**
+>**Always open pwsh as administrator to run ZeroTier and also mandatory for college desktops**
+> Windows PowerShell 5 will not work. The scripts refuse to run on it.
+
+Click Windows and type: pwsh
+Right click it to open **pwsh administrator**
+
+### 1.4 Go
+
+```pwsh
+go version
+
+// We specifically need go 1.26.2 only 
+// Visit the website and scroll to last to find it under archived as 
+// go1.26.2.windows-amd64.msi
+```
+
+> If absent, visit <https://go.dev/dl/>
+> Install `go1.26.2.windows-amd64.msi` — Installer, Windows x86-64, 59MB
+> Open a fresh pwsh afterwards
+
+### 1.5 gcc
+
+Needed to run the test suite.
+
+```pwsh
+gcc --version
+```
+
+> Look for 15.x.x
+> If absent, download MSYS2
+> After installing, open the specific shell: **MSYS2 UCRT64**
+
+Inside MSYS2 UCRT64:
+
+```bash
+pacman -Syu
+```
+
+> Press Y when prompted
+> The shell closes by itself
+> Open MSYS2 UCRT64 again and run it once more
+
+```bash
+pacman -Syu
+```
+
+Then:
+
+```bash
+pacman -S mingw-w64-ucrt-x86_64-gcc
+```
+
+> Now set the path
+> Click the Windows icon, right click **pwsh**, run as administrator
+
+Inside pwsh (administrator):
+
+```pwsh
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+
+if ($machinePath -notlike "*C:\msys64\ucrt64\bin*") {
+    [Environment]::SetEnvironmentVariable(
+        "Path",
+        "$machinePath;C:\msys64\ucrt64\bin",
+        "Machine"
+    )
+}
+```
+
+> Close it, open a new pwsh
+
+```pwsh
+where.exe gcc
+gcc --version
+gcc -dumpmachine
+```
+
+> Expect `C:\msys64\ucrt64\bin\gcc.exe` and `x86_64-w64-mingw32`
+> **NOTE:** if you get `C:\MinGW\bin\gcc.exe`, an older gcc is already installed
+> Fix it as administrator:
+
+```pwsh
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+
+$machinePath = ($machinePath -split ';' |
+    Where-Object { $_ -and $_ -ne 'C:\MinGW\bin' }) -join ';'
+
+$machinePath += ';C:\msys64\ucrt64\bin'
+
+[Environment]::SetEnvironmentVariable("Path", $machinePath, "Machine")
+```
+
+> You do **not** need Docker or a Postgres server. Those are the operator's job.
+
+---
+
+## Part 2 — Joining the private network
+
+Every machine in this demo talks over one private virtual network — a ZeroTier network. Join
+it before anything else, or nothing will connect.
+
+### 2.1 Get the network ID
+
+> The operator gives you a 16-character **network ID**, like `0123456789abcdef`
+> That's it — no invite link, no email, no sign-in. This one string is the only thing you need.
+
+### 2.2 Install ZeroTier
+
+```pwsh
+winget install --id ZeroTier.ZeroTierOne -e --source winget
+```
+
+> Or download from <https://www.zerotier.com/download/>
+> A firewall/network-adapter permission prompt may appear during install — allow it.
+
+### 2.3 Join, then wait to be let in
+
+Before everything else we will correct the time of our machine:
+
+```pwsh
+Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds((Invoke-RestMethod -Method Get -Uri 'https://timeapi.io/api/v1/time/current/unix' -Headers @{ accept = '*/*' }).unix_timestamp).UtcDateTime).ToLocalTime()
+```
+
+Open pwsh **as administrator** (zerotier-cli talks to a system service and needs elevation):
+
+```pwsh
+zerotier-cli join 0123456789abcdef
+```
+
+> This doesn't connect you yet — it just asks to join. The operator has to click a checkbox
+> in their ZeroTier Central console (**Members** tab) before you're actually let in. Tell
+> them your machine's ZeroTier address so they know which row to authorize:
+
+```pwsh
+zerotier-cli info
+```
+
+> The first field printed (e.g. `3568ddd9f9`) is your address. Send that, not your IP.
+
+### 2.4 Get your address
+
+```pwsh
+zerotier-cli listnetworks
+```
+
+Once ZeroTier is confirmed as running we check if a ping to the operator happens successfully 
+
+```bash
+ping 10.35.114.52
+```
+
+If it fails then either the operator desktop or the provider desktop needs to Restart ZeroTier
+
+> Once authorized, expect a line ending in something like `10.35.114.94/24`.
+> **Write down the part before the `/`.** This is the single most important value in this
+> guide — it replaces what used to be a `100.` address.
+> Still says `REQUESTING_CONFIGURATION` or `ACCESS_DENIED`? You haven't been authorized in
+> Central yet — ping the operator, don't troubleshoot your own machine.
+
+### 2.5 If your network blocks things
+
+Common on college, office and hotel Wi-Fi. Unlike before, joining never opens a browser on
+your end, so there's no login page to get blocked. What campus firewalls typically block
+instead is the raw UDP port ZeroTier prefers.
+
+```pwsh
+zerotier-cli info
+```
+
+- **Status says `ONLINE`** — direct connection, ideal, nothing to do.
+- **Status says `TUNNELED`** — the network blocked the fast path and ZeroTier fell back to
+  a TCP relay automatically. That's fine, no action needed, just slower.
+- **Status says `OFFLINE`**, or `zerotier-cli` errors out entirely — the service itself isn't
+  reachable. Restart it (`Get-Service ZeroTierOneService | Restart-Service`, as
+  administrator) and check again after a minute.
+- **Still nothing connects** — tether to a phone hotspot and try again. Tell the operator
+  either way.
+
+---
+
+## Part 3 — Every command you will use
+
+All of these run inside pwsh, from the `Vyomanaut_V2` folder. Set the two values at the top
+first — everything else refers to them.
+
+```pwsh
+# ── set once per terminal ────────────────────────────────────────────────
+$NetworkId = "0123456789abcdef"        # the operator's ZeroTier network ID
+$MyIp  = "10.35.114.94"                # yours, from `zerotier-cli listnetworks`
+$MSURL = "http://10.35.114.52:8080"    # the operator's, ask them
+
+# ── join the network (this is the main one) ──────────────────────────────
+.\scripts\demo\join.ps1 $MSURL -ListenPort 30303 -AdvertiseAddr $MyIp -DataDir $env:USERPROFILE\.vyomanaut
+
+# ── look at what you are storing (stop the daemon first) ─────────────────
+& ".\.vyomanaut-bin\provider.exe" inspect --data-dir="$env:USERPROFILE\.vyomanaut" --hex
+& ".\.vyomanaut-bin\provider.exe" inspect --data-dir="$env:USERPROFILE\.vyomanaut" --chunk <chunk_id>
+& ".\.vyomanaut-bin\provider.exe" inspect --data-dir="$env:USERPROFILE\.vyomanaut" --hex --compare="<original file>"
+
+# ── what you have earned ─────────────────────────────────────────────────
+& ".\.vyomanaut-bin\provider.exe" earnings --microservice-url=$MSURL --data-dir="$env:USERPROFILE\.vyomanaut"
+
+# ── leave politely (tells the network first) ─────────────────────────────
+& ".\.vyomanaut-bin\provider.exe" depart --microservice-url=$MSURL --data-dir="$env:USERPROFILE\.vyomanaut"
+
+# ── start over as a brand new machine ────────────────────────────────────
+Remove-Item -Recurse -Force "$env:USERPROFILE\.vyomanaut"
+```
+
+---
+
+## Part 4 — Running it
+
+Open pwsh. Work through this in order.
+
+### 4.1 Get the code
+
+Clone the code if starting fresh:
+
+```pwsh
+cd ~
+git clone https://github.com/vyomanaut-labs/Vyomanaut_Demo.git
+```
+
+> Already cloned? Just `cd ~\Vyomanaut_V2` and pull the latest:
+
+```pwsh
+cd ~
+cd .\Vyomanaut_V2\
+git pull
+```
+
+### 4.2 Check it builds
+
+```pwsh
+go mod tidy
+go vet ./...
+go build ./...
+```
+
+> All three should finish silently. Silence is success.
+
+### 4.3 Open your port, once per machine
+
+Right click pwsh, run as administrator:
+
+```pwsh
+New-NetFirewallRule -DisplayName "Vyomanaut provider" -Direction Inbound `
+  -Protocol TCP -LocalPort 30303 -Action Allow -Profile Any
+```
+
+### 4.4 Turn off sleep
+
+> Settings → System → Power → Screen and sleep → set sleep to **Never**
+
+A machine that dozes off looks exactly like a machine that left the network. That matters
+later, when leaving is something we test on purpose.
+
+### 4.5 Set your two values
+
+```pwsh
+$NetworkId = "0123456789abcdef"   # the operator's ZeroTier network ID
+$MSURL     = "http://10.35.114.52:8080"   # the operator's real address
+
+$MyIp = ((zerotier-cli listnetworks) -split "`r?`n" |
+    Select-String $NetworkId).ToString().Split()[-1].Split('/')[0]
+$MyIp
+```
+
+> Check `$MyIp` printed a `10.` address before continuing. If it's blank, you're not
+> authorized yet — see 2.3.
+
+### 4.6 Fresh start check — do not skip this
+
+**If the operator has restarted the coordinator since you last joined, delete your data
+folder first:**
+
+```pwsh
+Remove-Item -Recurse -Force "$env:USERPROFILE\.vyomanaut"
+```
+
+> Why: when the operator restarts, the network is rebuilt from scratch and your old
+> membership is no longer recognised. Keeping the old folder makes the join script skip the
+> code step and the daemon then gets rejected on every heartbeat with `401 invalid token`.
+> Deleting the folder is the fix. When in doubt, delete it.
+
+Then remove ./vyomanaut-bin folder saving the log, so the run starts fresh
+
+```bash
+Remove-Item -Path ".\.vyomanaut-bin" -Recurse -Force
+```
+
+Print the files to recheck
+
+```bash
+ls
+```
+
+### 4.7 Join
+
+And let's join the network!
+
+```pwsh
+.\scripts\demo\join.ps1 $MSURL -ListenPort 30303 -AdvertiseAddr $MyIp -DataDir $env:USERPROFILE\.vyomanaut
+```
+
+> **If the operator asks you to** — and only then — add `-MetricsAddr 0.0.0.0:9091` to that
+> command. It lets the operator's Prometheus/Grafana setup see this machine's numbers
+> (chunks stored, audit response times, and so on). It's off unless you turn it on, because
+> it opens that port with no password on it — fine on this project's own lab network, not
+> something to leave on anywhere else.
+
+#### Possible errors
+
+If on the college Desktop then it might show a warning for the clock to be lagging behind
+
+Press **"N"** and reset the clock manually using the command that is printed:
+
+```bash
+Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds((Invoke-RestMethod -Method Get -Uri 'https://timeapi.io/api/v1/time/current/unix' -Headers @{ accept = '*/*' }).unix_timestamp).UtcDateTime).ToLocalTime()
+```
+
+**Always use this before running the scripts**
+
+Or even better: Do it **manually.**
+
+Then make sure to delete the bin folder again
+
+```bash
+Remove-Item -Path ".\.vyomanaut-bin" -Recurse -Force
+```
+
+Then run the join script again.
+
+If after entering your preferred storage it fails with the message:
+> Exception: C:\Users\<you>\Vyomanaut_Demo\scripts\demo\join.ps1:144
+Line |
+ 144 |      if ($LASTEXITCODE -ne 0) { throw "provider onboard failed" }
+     |                                 ~~~~~~~~~~~
+     | provider onboard failed
+
+Then do:
+
+```bash
+Restart-Service -Name "ZeroTierOneService"
+Get-Service -Name "ZeroTierOneService"
+```
+
+```bash
+ping 10.35.114.52
+```
+
+and share the result with the operator
+
+---
+
+What the join script does:
+
+The first run builds the provider, which takes a minute or two. Then it asks you three
+things:
+
+1. **Your phone number**, like `+919790000001` — the operator tells you which one to use
+2. **How much storage to share, in GB** — enter **10** unless told otherwise
+3. **A 6-digit code** — this is when you ask the operator. They read it off their screen.
+
+Then the daemon starts and stays in the foreground.
+
+**Leave this window open.** Closing it or pressing Ctrl-C takes your machine off the network.
+
+### 4.8 Check the right things happened
+
+You should see, in order:
+
+```bash
+[STARTUP][single] Peer ID: 12D3Koo...
+[STARTUP][single] advertising 10.35.114.94:30303 to the network
+[STARTUP][single] Vyomanaut provider daemon ready
+```
+
+> **Check the advertised address matches your own `10.x` ZeroTier address.** If it doesn't,
+> stop and tell the operator.
+
+Then tell the operator you are up. They will confirm you appeared on their screen.
+
+### 4.9 Nothing happens for about ten minutes
+
+That is correct. New machines go through a probation period — the network stores test
+pieces on your disk and challenges you to prove you still have them. Five successful proofs
+and at least five minutes, then you are promoted.
+
+You do not need to do anything during this time.
+
+---
+
+## Part 5 — Things you might be asked to do
+
+### Look inside your own storage
+
+The storage is locked while the daemon runs, so stop it first with Ctrl-C, then:
+
+```pwsh
+& ".\.vyomanaut-bin\provider.exe" inspect --data-dir="$env:USERPROFILE\.vyomanaut" --hex
+```
+
+You will see chunks of identical size and a hex dump whose text column is nothing but dots.
+The "entropy" figure will read about **7.999** out of a maximum of 8.0 — meaning it is
+statistically indistinguishable from random noise. Ordinary English text measures about 4.9.
+
+Restart the daemon afterwards with the same join command. It remembers who you are.
+
+### Leave on purpose
+
+Politely, so the network can move your data first:
+
+```pwsh
+& ".\.vyomanaut-bin\provider.exe" depart --microservice-url=$MSURL --data-dir="$env:USERPROFILE\.vyomanaut"
+```
+
+Or abruptly — just close the lid or the window. Both are legitimate things to demonstrate.
+The network notices, rebuilds your pieces from the others, and puts them somewhere else. The
+owner's file survives either way.
+
+> Departing does not wipe your disk. Your own copy stays where it is, still meaningless on
+> its own. Delete the folder yourself if you want it gone.
+
+---
+
+## Part 6 — When something goes wrong
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| `401` / `invalid token`, repeating | Your saved membership is from an older run of the network | 4.6 — delete the data folder and join again |
+| Join script never asks for a phone number or code | Same cause: you still have an old data folder | 4.6 |
+| You registered fine (`PENDING_ONBOARDING` appeared), but the operator says you're never sending a heartbeat they'll accept, and your own log shows `microservice returned 400: ... "timestamp skew exceeds 5 minutes"` — you eventually show `DEPARTED` without ever leaving | Your machine's clock, not the network — it's off from the coordinator's by more than 5 minutes. `join.ps1` now checks this itself before onboarding and will warn you if so; if you skipped past that warning or are on an older checkout, this is why. Common on lab/shared desktops where campus Wi-Fi blocks outbound NTP (UDP 123) the same way it can block other ports — see 2.5 | As administrator: `w32tm /resync /force`. If that times out (NTP is blocked), set the clock manually instead — get the operator's `$MSURL`, then: `(Invoke-WebRequest "$MSURL/.well-known/jwks.json" -UseBasicParsing).Headers.Date` gives the coordinator's own clock; `Set-Date` your machine to match, then re-run join.ps1 (no need to delete your data folder — this isn't a stale-registration problem) |
+| `The term '...join.ps1' is not recognized` | Wrong folder | `cd ~\Vyomanaut_V2` first |
+| Script refuses to run, mentions version | You are in Windows PowerShell 5, not pwsh | 1.3 |
+| `zerotier-cli listnetworks` shows `REQUESTING_CONFIGURATION` or `ACCESS_DENIED` | You haven't been authorized in ZeroTier Central yet | Send the operator your address from `zerotier-cli info`, ask them to authorize it — 2.3 |
+| `zerotier-cli listnetworks` prints nothing at all | Not joined | `zerotier-cli join <network-id>` — Part 2 |
+| `zerotier-cli info` shows `OFFLINE`, or the command errors out | The ZeroTier service isn't running | `Get-Service ZeroTierOneService \| Restart-Service` (as administrator) |
+| `bind: address already in use` | A provider is already running here | Close the other window, or use `-ListenPort 30304` |
+| Registered, but the operator sees nothing connect | Usually the wrong advertised address | Recheck 4.5 and 4.8 — pass your `10.x` ZeroTier address explicitly |
+| `connection refused` to the coordinator | Coordinator down, wrong address, or firewall | Recheck 4.3 and your `$MSURL`, then ask |
+| Two authorized machines never see each other in `zerotier-cli peers` | Both online but a firewall is blocking even the TCP relay | Check `zerotier-cli info` shows `TUNNELED` not `OFFLINE` on both ends; if `OFFLINE`, restart the service; if still stuck, try a phone hotspot |
+| Operator mentions `NETWORK_NOT_READY` | Not your problem — not enough machines yet | Wait |
+| You look like you left, but you didn't touch anything | The machine went to sleep | 4.4 |
+| Firewall popup | Expected, once | **Allow** |
+
+If you are stuck, send the operator: your Peer ID, your ZeroTier address (from
+`zerotier-cli info`), your `10.x` address, and the last five lines of your terminal.

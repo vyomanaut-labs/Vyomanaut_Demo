@@ -1,0 +1,178 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - exhaustive
+    - mnd
+    - depguard
+
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: false
+      # internal/audit.AuditResult (declared Session 7.3.1) is exhaustive-checked
+      # by default — no additional per-type allowlist entry is needed. This
+      # comment closes the M7 placeholder that used to track this.
+      # internal/repair.Priority (declared Session 9.1.1) is exhaustive-checked
+      # by default — no additional allowlist entry is needed.
+      # internal/repair.TriggerType (declared Session 9.1.1) is also
+      # exhaustive-checked by default. This comment closes the M9 placeholder
+      # that used to track both — no such placeholder line was actually found
+      # in this file when Session 9.1.1 went looking for it (Session 0.2.1
+      # apparently never added one); the intent is closed here regardless,
+      # mirroring the M7 precedent above.
+      # internal/payment.EscrowEventType (declared Session 10.2.1) and
+      # internal/payment.OwnerEscrowEventType (declared Session 10.5.1) are
+      # both exhaustive-checked by default. This comment closes the M10
+      # placeholder that used to track EscrowEventType — again, no such
+      # placeholder line was actually found in this file (same gap as M9's).
+    errcheck:
+      check-type-assertions: true
+    mnd:
+      ignored-functions:
+        - "argon2.IDKey"
+
+    depguard:
+      rules:
+        # ── crypto: stdlib + x/crypto/x/sys only, zero internal/ imports ───────
+        crypto:
+          files:
+            - "**/internal/crypto/**"
+          allow:
+            - $gostd
+            - golang.org/x/crypto
+            - golang.org/x/sys
+
+        # ── erasure: stdlib + config only (config is universally importable) ──
+        erasure:
+          files:
+            - "**/internal/erasure/**"
+          allow:
+            - $gostd
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/config
+
+        # ── storage: no payment, scoring, repair ────────────────────────────────
+        storage:
+          files:
+            - "**/internal/storage/**"
+          allow:
+            - $gostd
+            - github.com/linxGnu/grocksdb
+            - github.com/stretchr/testify
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/config
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/storage
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/erasure
+
+        # ── payment: no repair, p2p ──────────────────────────────────────────────
+        # google/uuid and lib/pq added (build.md Phase 10.1/10.2): every exported
+        # signature takes uuid.UUID, and the package's own live-DB tests need
+        # lib/pq registered, same reasoning as scoring's and repair's entries.
+        # internal/scoring added (build.md Milestone 10 header): "internal/payment
+        # MAY import internal/scoring for read-only score lookups feeding the
+        # release multiplier (Phase 10.4) — nothing in IC §9 prohibits this
+        # direction." Unlike the scoring<->repair<->payment<->audit square (IC §9's
+        # closing paragraph explicitly forbids all six pairwise directions there),
+        # payment->scoring is a one-way, side-effect-free read with no cycle.
+        payment:
+          files:
+            - "**/internal/payment/**"
+          allow:
+            - $gostd
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/config
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/scoring
+            - github.com/google/uuid
+            - github.com/lib/pq
+            - github.com/prometheus/client_golang/prometheus
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/metrics
+
+        # ── scoring: no repair, payment ──────────────────────────────────────────
+        # google/uuid and lib/pq added (build.md Phase 8.1 Session 8.1.1): IC §5.6
+        # requires uuid.UUID in every exported scoring signature, and the
+        # package's own live-DB tests need lib/pq registered, same as audit's
+        # entry below. Neither addition touches the actual security boundary
+        # this rule protects (repair/payment separation stays denied).
+        scoring:
+          files:
+            - "**/internal/scoring/**"
+          allow:
+            - $gostd
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/config
+            - github.com/google/uuid
+            - github.com/lib/pq
+
+        # ── audit: no scoring, repair, payment ───────────────────────────────────
+        audit:
+          files:
+            - "**/internal/audit/**"
+          allow:
+            - $gostd
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/crypto
+            - github.com/google/uuid
+            - github.com/lib/pq
+            - github.com/prometheus/client_golang/prometheus
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/metrics
+
+        # ── p2p: stdlib + crypto only (identity.go needs DeriveKeystoreEncKey / ──
+        # EncryptAEAD/DecryptAEAD); no payment, scoring, repair, audit
+        p2p:
+          files:
+            - "**/internal/p2p/**"
+          allow:
+            - $gostd
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/config
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/crypto
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/metrics
+
+        # ── repair: config + erasure only — no payment, audit, scoring, p2p ──────
+        # IC §9's closing paragraph: "the microservice entrypoint wires
+        # internal/audit, internal/scoring, internal/repair, and
+        # internal/payment together; none of these four packages imports any
+        # of the others directly" — this explicitly rules out importing
+        # internal/scoring even read-only (assignment.go queries
+        # mv_provider_scores directly via SQL instead, see its own file
+        # header). internal/p2p is excluded too: RepairTransport/RepairStream
+        # (executor.go) are declared using only stdlib-compatible types so
+        # p2p.Host satisfies them structurally without either package
+        # importing the other (same reasoning as audit's SecretsManagerClient
+        # pattern, secrets_iface.go).
+        repair:
+          files:
+            - "**/internal/repair/**"
+          allow:
+            - $gostd
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/config
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/erasure
+            - github.com/google/uuid
+            - github.com/lib/pq
+            - github.com/vyomanaut-labs/Vyomanaut_V2/internal/metrics
+
+        # ── client/*: deny-only rule; everything else stays allowed by default ──
+        client:
+          files:
+            - "**/internal/client/**"
+          deny:
+            - pkg: "github.com/vyomanaut-labs/Vyomanaut_V2/cmd"
+              desc: "internal/client/* must not import cmd/"
+
+  exclusions:
+    rules:
+      - path: "_test\\.go"
+        linters:
+          - mnd
+      - path: "internal/config/profiles\\.go"
+        linters:
+          - mnd
+      - path: "scripts/test/daemon_process_unix\\.go"
+        linters:
+          - unused
+      - path: "scripts/test/daemon_process_windows\\.go"
+        linters:
+          - unused
+
+formatters:
+  enable:
+    - gofmt

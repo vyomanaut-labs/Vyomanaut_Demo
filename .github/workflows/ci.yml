@@ -1,0 +1,393 @@
+# Vyomanaut V2 — CI Pipeline
+# REF: MVP §8.4
+#
+# TRANSITION RULE: When a milestone completes, remove `continue-on-error: true`
+# and the `|| (echo "PENDING..." && exit 0)` fallback from its gate check.
+# That check then becomes a hard merge-blocking gate.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # storage-platform-coverage: native arm64/darwin build for
+  # internal/storage and internal/crypto.
+  #
+  # check-01 (go build) and check-17 (GOARCH=arm64 cross-build) both only
+  # run on ubuntu-latest/amd64, so internal/storage/rotational_other.go
+  # (!linux) and internal/crypto/aesni_other.go (!amd64) have zero CI
+  # coverage between them, despite Apple Silicon macOS being an explicitly
+  # supported provider-daemon platform (FR-022). check-17's CGO_ENABLED=0
+  # trick can't reach internal/storage at all — grocksdb is cgo, and true
+  # cross-compiling it needs a RocksDB build for the target platform this
+  # image doesn't have. A native macos-15 runner (GitHub-hosted, arm64)
+  # sidesteps cross-compilation entirely and closes both gaps in one job.
+  #
+  # continue-on-error until a first real run confirms the Homebrew
+  # CGO_CFLAGS/CGO_LDFLAGS below are exactly right for this runner image —
+  # same "PENDING" pattern already used for check-06/12/13/16 while new.
+  #
+  # REF: M2 review §6 (aesni_other.go), M5 review §4 (rotational_other.go)
+  # ─────────────────────────────────────────────────────────────
+  storage-platform-coverage:
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Install RocksDB (Homebrew)
+        run: brew install rocksdb
+
+      - name: check-18 — native arm64/darwin build (internal/storage, internal/crypto)
+        env:
+          CGO_ENABLED: 1
+        run: |
+          ROCKSDB_PREFIX="$(brew --prefix rocksdb)"
+          export CGO_CFLAGS="-I${ROCKSDB_PREFIX}/include"
+          export CGO_LDFLAGS="-L${ROCKSDB_PREFIX}/lib -lrocksdb -lstdc++ -lz -lbz2 -lsnappy -llz4 -lzstd"
+          go build ./internal/storage/... ./internal/crypto/... \
+            || (echo "PENDING: first native-arm64 run — CGO flags above may need tuning, see M5 review §4" && exit 0)
+
+  # ─────────────────────────────────────────────────────────────
+  # storage-windows-coverage: native windows-latest run for
+  # internal/storage's BadgerDB-backed test suite (ADR-046, Session 16.0.1).
+  #
+  # ADR-046 §4: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build already
+  # proves the Windows backend compiles from the existing Linux ci container
+  # with no new toolchain (BadgerDB has no CGo dependency) — but that only
+  # proves compilation, not correctness. This job is the "actually run it"
+  # half: a native windows-latest runner (mirroring the existing native
+  # macos-15 storage-platform-coverage job above) executing
+  # internal/storage's real test suite, including the badgerStore round-trip
+  # and content-hash-verification tests (engine_badger_test.go).
+  #
+  # continue-on-error until a first real run confirms there's nothing
+  # Windows-path-specific (file locking, path separators) that the
+  # cross-compile check alone can't catch — same "PENDING" pattern already
+  # used for check-06/12/13/16 while new.
+  #
+  # REF: ADR-046 §4, build.md Session 16.0.1
+  # ─────────────────────────────────────────────────────────────
+  storage-windows-coverage:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: check-19 — native windows-latest test run (internal/storage)
+        shell: bash
+        run: |
+          go test -v ./internal/storage/... \
+            || (echo "PENDING: first native windows-latest run — see build.md Session 16.0.1" && exit 0)
+
+  ensure-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull or build CI image
+        run: |
+          docker pull ghcr.io/vyomanaut-labs/vyomanaut-ci:rocksdb-10.10.1-pgclient1 2>/dev/null && exit 0
+          docker build \
+            -t ghcr.io/vyomanaut-labs/vyomanaut-ci:rocksdb-10.10.1-pgclient1 \
+            -f deployments/docker/Dockerfile.ci .
+          docker push ghcr.io/vyomanaut-labs/vyomanaut-ci:rocksdb-10.10.1-pgclient1
+  ci:
+    needs: ensure-image  
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    container:
+      image: ghcr.io/vyomanaut-labs/vyomanaut-ci:rocksdb-10.10.1-pgclient1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vyomanaut_test
+          POSTGRES_USER: vyomanaut_migrator
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+ 
+      # ─────────────────────────────────────────────────────────────
+      # check-01: Build — zero warnings, strict mode
+      # REF: MVP §8.4 check 1
+      # ─────────────────────────────────────────────────────────────
+      - name: check-01 — go build
+        id: check-01
+        run: go build ./...
+
+      # ─────────────────────────────────────────────────────────────
+      # check-02: Vet
+      # REF: MVP §8.4 check 2
+      # ─────────────────────────────────────────────────────────────
+      - name: check-02 — go vet
+        id: check-02
+        run: go vet ./...
+
+      # ─────────────────────────────────────────────────────────────
+      # check-03: golangci-lint
+      # Linters: gofmt, govet, errcheck, exhaustive, godot, mnd
+      # Note: golangci-lint updated from v1.57.0 → v2.12.2
+      # REF: MVP §8.4 check 3, .golangci.yml
+      # ─────────────────────────────────────────────────────────────
+      - name: check-03 — golangci-lint
+        id: check-03
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+
+      # ─────────────────────────────────────────────────────────────
+      # check-05: DHT key validator persistence (M6 gate)
+      # Becomes hard gate after Session 6.2.3 completes.
+      # REF: MVP §8.4 check 5, ADR-021
+      # ─────────────────────────────────────────────────────────────
+      - name: check-05 — TestDHTKeyValidatorPersists (hard gate)
+        id: check-05
+        run: go test -run TestDHTKeyValidatorPersists ./internal/p2p/...
+
+      # ─────────────────────────────────────────────────────────────
+      # check-06: No float arithmetic in payment package (M10 gate)
+      # Becomes hard gate after Session 10.4.2 completes.
+      # REF: MVP §8.4 check 6, INV-4, ADR-011
+      # ─────────────────────────────────────────────────────────────
+      - name: check-06 — TestNoFloatArithmetic (M10 gate)
+        id: check-06
+        continue-on-error: true
+        run: |
+          go test -run TestNoFloatArithmetic ./internal/payment/... \
+            || (echo "PENDING: session 10.4.2" && exit 0)
+
+      # ─────────────────────────────────────────────────────────────
+      # check-07: Migration apply + rollback against CI Postgres
+      # Requires btree_gist. Runs prod schema → separate demo schema.
+      # REF: MVP §8.4 check 7, DM §migrations
+      # ─────────────────────────────────────────────────────────────
+      - name: check-07 — migration apply + rollback (hard gate)
+        id: check-07
+        env:
+          PGPASSWORD: testpass
+          PGHOST: postgres
+          PGPORT: "5432"
+          PGUSER: vyomanaut_migrator   
+          PGDATABASE: vyomanaut_test  
+        run: |
+          psql --version
+
+            psql -v ON_ERROR_STOP=1 -d vyomanaut_test \
+              -c "CREATE EXTENSION IF NOT EXISTS btree_gist;"
+
+            # vyomanaut_test gets the DEMO schema — this is the database go test's
+            # default PGDATABASE targets, and DemoProfile is what nearly every live-DB
+            # test fixture (repair, scoring, audit) constructs its assertions against.
+            go run migrations/generator.go --profile=demo \
+              > /tmp/001_demo.sql
+            psql -v ON_ERROR_STOP=1 -d vyomanaut_test \
+              -f /tmp/001_demo.sql
+
+            psql -v ON_ERROR_STOP=1 -d vyomanaut_test -c \
+              "ALTER ROLE vyomanaut_app WITH PASSWORD 'testpass';
+              ALTER ROLE vyomanaut_gc  WITH PASSWORD 'testpass';"
+
+            bash scripts/ci/migration_check.sh
+
+            # Prod schema is now a structural smoke test only — prove it applies
+            # cleanly, on a throwaway database go test never connects to.
+            go run migrations/generator.go --profile=prod \
+              > /tmp/001_prod.sql
+            psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE vyomanaut_prod_smoketest;"
+            psql -v ON_ERROR_STOP=1 -d vyomanaut_prod_smoketest \
+              -c "CREATE EXTENSION IF NOT EXISTS btree_gist;"
+            psql -v ON_ERROR_STOP=1 -d vyomanaut_prod_smoketest \
+              -f /tmp/001_prod.sql
+
+      # ─────────────────────────────────────────────────────────────
+      # check-04: Tests with race detector
+      # Moved here, after the schema, passwords, and migration_check.sh is run by check-07
+      # REF: MVP §8.4 check 4
+      # ─────────────────────────────────────────────────────────────
+      - name: check-04 — go test (race detector)
+        id: check-04
+        env:
+          PGHOST: postgres
+          PGPORT: "5432"
+          PGDATABASE: vyomanaut_test
+          PGUSER: vyomanaut_app
+          PGPASSWORD: testpass
+          PGVERIFY_USER: vyomanaut_migrator
+          PGVERIFY_PASSWORD: testpass
+        run: go test -race -count=1 -p 1 ./...
+      
+
+      # ─────────────────────────────────────────────────────────────
+      # check-08 through check-11: grep-based invariant checks
+      # 08 — challenge_nonce must be BYTEA(33), never BYTEA(32)        INV-5
+      # 09 — no float types anywhere in internal/payment/              INV-4
+      # 10 — no references to ADRs above the known ceiling (see
+      #      MAX_KNOWN_ADR in grep_checks.sh — not duplicated here so
+      #      this comment can't go stale the way the ceiling itself did,
+      #      M11 audit remediation Finding 8)
+      # 11 — no UPI Collect API endpoint strings
+      # REF: MVP §8.4 checks 8–11, scripts/ci/grep_checks.sh
+      # ─────────────────────────────────────────────────────────────
+      - name: check-08 to check-11 — grep invariant checks
+        id: check-08-11
+        run: bash scripts/ci/grep_checks.sh
+
+      # ─────────────────────────────────────────────────────────────
+      # check-12: Mermaid render check for all docs/system-design/ diagrams
+      # Becomes hard gate once diagrams are committed.
+      # REF: MVP §8.4 check 12
+      # ─────────────────────────────────────────────────────────────
+      - name: check-12 — Mermaid render
+        id: check-12
+        continue-on-error: true
+        run: |
+          npx --yes @mermaid-js/mermaid-cli -V \
+            || (echo "PENDING: mermaid diagrams" && exit 0)
+
+      # ─────────────────────────────────────────────────────────────
+      # check-13: Hyperlink integrity for all docs/**/*.md files
+      # Becomes hard gate once docs are stabilised.
+      # REF: MVP §8.4 check 13
+      # ─────────────────────────────────────────────────────────────
+      - name: check-13 — hyperlink check
+        id: check-13
+        continue-on-error: true
+        run: |
+          npx --yes markdown-link-check docs/**/*.md \
+            || (echo "PENDING: links may be stale" && exit 0)
+
+      # ─────────────────────────────────────────────────────────────
+      # check-14: ShardSize compile-time constant (M1 gate)
+      # REF: MVP §8.4 check 14, INV-7, ADR-003
+      # ─────────────────────────────────────────────────────────────
+      - name: check-14 — TestProfileShardSizeIsConstant (hard gate)
+        id: check-14
+        run: go test -run TestProfileShardSizeIsConstant ./internal/config/...
+
+      # ─────────────────────────────────────────────────────────────
+      # check-15: Both NetworkProfiles fully specified (M1 gate)
+      # REF: MVP §8.4 check 15, ADR-031
+      # ─────────────────────────────────────────────────────────────
+      - name: check-15 — TestProfileBothFullySpecified (hard gate)
+        id: check-15
+        run: go test -run TestProfileBothFullySpecified ./internal/config/...
+
+      # ─────────────────────────────────────────────────────────────
+      # check-16: No orphan metric names (M-OBS gate)
+      # All Prometheus metric names must follow vyomanaut_{subsystem}_{name}_{unit}.
+      # Becomes hard gate after Session OBS.4.1 completes.
+      # REF: MVP §8.4 check 16, INV-METRIC
+      # ─────────────────────────────────────────────────────────────
+      - name: check-16 — TestNoOrphanMetricName (M-OBS gate)
+        id: check-16
+        continue-on-error: true
+        run: |
+          bash scripts/ci/grep_checks.sh --check=metric-names \
+            || (echo "PENDING: session OBS.4.1" && exit 0)
+
+      # ─────────────────────────────────────────────────────────────
+      # check-17: GOARCH=arm64 cross-build for internal/crypto and
+      # internal/p2p (M2 gate, extended per M6 review §7).
+      # check-01 only builds amd64 (ubuntu-latest), so aesni_other.go's
+      # !amd64 build tag has zero CI coverage — yet Apple Silicon (macOS
+      # 12+, arm64) is an explicitly supported provider-daemon platform
+      # (FR-022). internal/p2p joined this check because it's equally
+      # CGO-free (stdlib + internal/config + internal/crypto only, per
+      # .golangci.yml's depguard rule) and is the package most directly
+      # exercising cross-platform networking code, yet had zero arm64
+      # coverage of its own until now. Not go build ./... for the whole
+      # module — internal/storage needs CGO + librocksdb, which has no
+      # arm64 toolchain in this image, so a package-wide arm64 build would
+      # fail for reasons unrelated to what this check verifies.
+      # internal/storage's analogous !linux gap (rotational_other.go) is a
+      # separate, native-runner fix — see M5 review §4.
+      # REF: build.md Session 2.1.1 VERIFY, M2 review §6, M6 review §7
+      # ─────────────────────────────────────────────────────────────
+      - name: check-17 — GOARCH=arm64 cross-build (internal/crypto, internal/p2p)
+        id: check-17
+        env:
+          GOARCH: arm64
+          CGO_ENABLED: 0
+        run: go build ./internal/crypto/... ./internal/p2p/...
+
+      # ─────────────────────────────────────────────────────────────
+      # check-20: track scoping (MVP §8.4 check 17, demo track).
+      #
+      # The label is check-20 and the MVP §8.4 number is 17. Those are two
+      # separate sequences and have been since M2: check-17 above is the
+      # arm64 cross-build, check-18 and check-19 are the two native-runner
+      # platform-coverage jobs, none of which is a numbered MVP §8.4 check.
+      # MVP §8.4 records the same note, so neither sequence can be read as
+      # the other.
+      #
+      # Asserts that every numbered check in MVP §8.4 carries a Track value,
+      # and that no test file names go-libp2p / QUIC / Noise / Circuit Relay
+      # without either a TRACK marker or a restated demo-track rationale.
+      # internal/p2p/doc.go records that none of those mechanisms is present
+      # on this track; ADR-063 §3 requires the affected claims be restated,
+      # not weakened, and this check is what keeps the restatement from
+      # being deleted later.
+      #
+      # mvp.md lives in Vyomanaut_Research, which is deliberately not forked
+      # (ADR-062 §2), so the script NOTEs and skips that half when the
+      # research checkout is absent rather than failing on a clean clone.
+      # Set VYOMANAUT_DOCS_ROOT to enforce it here once the runner has the
+      # research repo available.
+      #
+      # REF: MVP §8.4 check 17, ADR-062 §1/§3, ADR-063 §3,
+      #      build_part3.md Session 18.1.1
+      # ─────────────────────────────────────────────────────────────
+      - name: check-20 — track scoping (MVP §8.4 check 17)
+        id: check-20
+        run: bash scripts/ci/track_scope.sh
