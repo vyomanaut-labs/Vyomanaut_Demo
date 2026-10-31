@@ -1,5 +1,9 @@
 # Provider Guide — Windows
 
+> **Faster way:** for demo events use the one-click installer instead — see
+> [provider_quick_install.md](./provider_quick_install.md). No Git, Go or gcc needed on the
+> provider PC. This guide is the manual, build-from-source route.
+
 You are lending a Windows machine to the Vyomanaut demo network. Your machine stores
 encrypted pieces of someone else's file and proves, on demand, that it still has them.
 

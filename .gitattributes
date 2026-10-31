@@ -26,6 +26,8 @@
 # what Windows-native editors (VS Code on Windows, ISE, Notepad) default
 # to; kept distinct from the LF default deliberately, not an oversight.
 *.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.txt   text eol=crlf
 
 # Go source, SQL migrations, YAML/JSON config, and Markdown docs — always
 # LF, regardless of which machine last edited them. golangci-lint and
