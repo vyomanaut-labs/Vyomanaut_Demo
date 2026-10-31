@@ -32,7 +32,12 @@ param(
     # connect. ALWAYS pass this explicitly outside a single-NIC machine —
     # see ADR-089 and guides/operator_and_client_guide.md.
     [string]$AdvertiseHost = "",
-    [int]$Port = 8080
+    [int]$Port = 8080,
+    # [Added] Parity with up.sh --expose-metrics. Serves an UNAUTHENTICATED GET /metrics on
+    # the coordinator's own port ($Port) so Prometheus can collect the coordinator-side
+    # repair/audit/scoring/escrow/db-latency series. Off by default; only ever on the
+    # isolated lab network. Same opt-in rule as a provider's -MetricsAddr.
+    [switch]$ExposeMetrics
 )
 
 $ErrorActionPreference = "Stop"
@@ -188,9 +193,12 @@ $env:VYOMANAUT_ADMIN_API_KEY = $AdminApiKey
 $env:VYOMANAUT_MICROSERVICE_SIGNING_SEED = $SigningSeed
 $env:VYOMANAUT_CLUSTER_MASTER_SEED = $ClusterSeed
 $env:VYOMANAUT_HTTP_LISTEN_ADDR = ":$Port"
+if ($ExposeMetrics) { $env:VYOMANAUT_EXPOSE_METRICS = "1" }
+$msArgs = @("--mode=demo", "--otp-delivery-log=$OtpLog", "--departure-threshold=180s")
+if ($ExposeMetrics) { $msArgs += "--expose-metrics" }
 $msLog = Join-Path $LogDir "microservice.log"
 $msProc = Start-Process -FilePath (Join-Path $BinDir "microservice.exe") `
-    -ArgumentList "--mode=demo", "--otp-delivery-log=$OtpLog", "--departure-threshold=180s" `
+    -ArgumentList $msArgs `
     -RedirectStandardOutput $msLog -RedirectStandardError "$msLog.err" `
     -PassThru -WindowStyle Hidden
 Add-Content -Path $PidFile -Value $msProc.Id
@@ -232,6 +240,7 @@ if (-not $ready) {
     Write-Error "[up.ps1] microservice never became reachable — see $msLog"
     exit 1
 }
+if ($ExposeMetrics) { Write-Log "coordinator-side metrics live at $MicroserviceUrl/metrics (-ExposeMetrics was set)" }
 
 # [Extended, Session 18.1.7] STATE_DIR/DATA_DIR/OWNER_DIR/PID_FILE are
 # exported here for the same reason up.sh exports them: every one of them

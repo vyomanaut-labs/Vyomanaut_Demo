@@ -193,11 +193,11 @@ cd ~
 git clone https://github.com/vyomanaut-labs/Vyomanaut_Demo.git
 ```
 
-**Already cloned?** Just `cd ~\Vyomanaut_V2` and pull the latest:
+**Already cloned?** Just `cd ~\Vyomanaut_Demo` and pull the latest:
 
 ```pwsh
 cd ~
-cd .\Vyomanaut_V2\
+cd .\Vyomanaut_Demo\
 git pull
 ```
 
@@ -335,6 +335,12 @@ first one that gets missed:
    Add one block per machine as they join, in the same array. Remove a block when a machine
    is done for the day — nothing else needs cleaning up.
 
+   **Or skip the JSON entirely:** machines installed from the one-click bundle already serve
+   metrics to you only, and `scripts/demo/metrics.ps1` (PowerShell 7) writes the target
+   list for you — `pwsh scripts/demo/metrics.ps1 -Mode watch -NetworkId "$NETWORK_ID"` reads
+   the member list from ZeroTier Central (needs `ZEROTIER_CENTRAL_TOKEN`), or add one by hand
+   with `-Mode add -Ip <their 10.x> -Desk "<name>"`.
+
 #### What you're actually looking at
 
 The coordinator's own panels (top nine, if you turned them on above):
@@ -413,13 +419,25 @@ Sanity check the output before continuing:
 
 ### 4.5 Give everyone the address
 
-Tell your teammates:
+**Windows volunteers (the normal case):** build the one-click bundle and hand out the zip.
+It carries your address, so there is nothing to type. Needs PowerShell 7 and Go 1.26.2
+(`brew install powershell`); it cross-compiles the Windows provider on your Mac:
+
+```bash
+pwsh scripts/release/build_provider_bundle.ps1 \
+  -MicroserviceUrl "http://$MY_IP:8080" -NetworkId "$NETWORK_ID" -ValidDays 2
+```
+
+> Commit and push first — the bundle is built from the public repo. Details and the
+> volunteer's side: `provider_quick_install.md`.
+
+**Manual route:** tell your teammates
 
 ```bash
 http://<your 10.x ZeroTier address>:8080
 ```
 
-They can now start Part 4 of their own guide.
+They can then start Part 4 of their own guide.
 
 ### 4.6 Open the console
 

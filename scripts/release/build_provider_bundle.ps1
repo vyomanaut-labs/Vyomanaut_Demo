@@ -13,9 +13,11 @@
   3. Builds cmd/provider for windows/amd64 with CGO off (the Windows provider
      uses BadgerDB, so no gcc/MSYS2 is needed) through garble:
        garble -literals -seed=random build -trimpath -ldflags "-s -w"
-  4. Writes config.json (coordinator URL, ZeroTier network ID, port, region).
+  4. Writes config.json (coordinator URL, ZeroTier network ID, port, region,
+     metrics port, who may read metrics, and the event end date).
   5. Downloads the ZeroTier MSI so the provider PC needs no internet for it.
-  6. Zips everything into dist\VyomanautProvider-<version>.zip and prints its SHA-256.
+  6. Writes SHA256SUMS over every file in the bundle (the installer verifies it).
+  7. Zips everything into dist\VyomanautProvider-<version>.zip and prints its SHA-256.
 
   The bundle contains NO source code, NO .git folder, and NO secrets. Each
   provider generates its own identity seed on first run.
@@ -25,7 +27,7 @@
   ("garble reverse"), which is also how you decode an obfuscated crash trace.
 
 .EXAMPLE
-  ./scripts/release/build_provider_bundle.ps1 -MicroserviceUrl http://10.35.114.52:8080 -NetworkId 0123456789abcdef
+  ./scripts/release/build_provider_bundle.ps1 -MicroserviceUrl http://10.147.17.1:8080 -NetworkId 0123456789abcdef -ValidDays 2
 #>
 [CmdletBinding()]
 param(
@@ -38,10 +40,18 @@ param(
     [string]$City = "Pune",
     [ValidateSet("Delhi NCR", "Mumbai", "Bangalore", "Hyderabad", "Chennai", "Kolkata", "Pune", "Ahmedabad", "Other")]
     [string]$Region = "Pune",
+    # Metrics: each provider serves read-only daemon metrics on this port, reachable only
+    # from the addresses in -MetricsAllowFrom (default: the coordinator's own ZeroTier IP,
+    # taken from -MicroserviceUrl). Pass -MetricsPort 0 to turn provider metrics off.
+    [int]$MetricsPort = 9091,
+    [string[]]$MetricsAllowFrom = @(),
+    # The provider stops itself this many days after the build (the demo event window).
+    # 0 = never expires.
+    [int]$ValidDays = 3,
     [string]$OutDir = "",
     # Skip garble and do a plain stripped build (faster, for debugging only).
     [switch]$NoObfuscate,
-    # Don't bundle the ZeroTier MSI; the installer then falls back to winget.
+    # Don't bundle the ZeroTier MSI; the installer then falls back to a download link.
     [switch]$SkipZeroTier,
     # Take installer files from this checkout instead of the cloned repo (testing unpushed edits).
     [switch]$UseLocalTemplates
@@ -55,17 +65,30 @@ $ZeroTierMsiUrl    = "https://download.zerotier.com/dist/ZeroTier%20One.msi"
 function Log($m)  { Write-Host "[build] $m" -ForegroundColor Cyan }
 function Fail($m) { Write-Host "[build] ERROR: $m" -ForegroundColor Red; exit 1 }
 
-# ── inputs ────────────────────────────────────────────────────────────────
+# -- inputs ----------------------------------------------------------------
 if ($NetworkId -notmatch '^[0-9a-fA-F]{16}$') { Fail "-NetworkId must be the 16-hex-char ZeroTier network ID" }
 if ($MicroserviceUrl -notmatch '^https?://[^/\s]+(:\d+)?/?$') { Fail "-MicroserviceUrl must look like http://10.x.x.x:8080" }
 $MicroserviceUrl = $MicroserviceUrl.TrimEnd('/')
 if ($DefaultStorageGB -lt 10) { Fail "-DefaultStorageGB must be >= 10 (the coordinator rejects less)" }
 
+# Default metrics allow-list: the coordinator's own IP (that is where Prometheus runs).
+if ($MetricsPort -gt 0 -and $MetricsAllowFrom.Count -eq 0) {
+    try {
+        $h = ([Uri]$MicroserviceUrl).Host
+        if ($h -match '^\d{1,3}(\.\d{1,3}){3}$') {
+            $MetricsAllowFrom = @($h)
+            Log "metrics will be readable only from the coordinator ($h); pass -MetricsAllowFrom to add more"
+        } else {
+            Log "warning: coordinator URL has no IPv4 host, so no metrics allow-list could be derived; the metrics port will stay closed unless you pass -MetricsAllowFrom"
+        }
+    } catch { }
+}
+
 $ScriptDir   = $PSScriptRoot
-if (-not $OutDir) { $OutDir = Join-Path (Resolve-Path (Join-Path $ScriptDir "..\..")) "dist" }
+if (-not $OutDir) { $OutDir = Join-Path (Resolve-Path (Join-Path $ScriptDir "../..")) "dist" }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-# ── toolchain ─────────────────────────────────────────────────────────────
+# -- toolchain -------------------------------------------------------------
 foreach ($t in "go", "git") {
     if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Fail "$t is not on PATH" }
 }
@@ -83,7 +106,7 @@ if (-not $NoObfuscate) {
     }
 }
 
-# ── fresh clone of the public repo ───────────────────────────────────────
+# -- fresh clone of the public repo ---------------------------------------
 $work = Join-Path ([IO.Path]::GetTempPath()) ("vyo-build-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
 Log "cloning $RepoUrl ($Ref) into a temp folder"
 & git clone --quiet --depth 1 --branch $Ref $RepoUrl $work
@@ -93,7 +116,7 @@ $commit = (& git -C $work rev-parse --short=12 HEAD).Trim()
 # Installer files come from the SAME clone as the code, so a bundle is fully
 # reproducible from the repo at -Ref. -UseLocalTemplates is only for testing
 # installer edits before they are pushed.
-$TemplateDir = Join-Path $work "scripts\release\provider"
+$TemplateDir = Join-Path $work "scripts/release/provider"
 if ($UseLocalTemplates) {
     $TemplateDir = Join-Path $ScriptDir "provider"
     Write-Host "[build] warning: using LOCAL installer files from $TemplateDir, not the repo's" -ForegroundColor Yellow
@@ -108,14 +131,14 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 $buildLog = Join-Path $OutDir "build-$version.log"
 
-# ── build provider.exe ────────────────────────────────────────────────────
+# -- build provider.exe ----------------------------------------------------
 $exe = Join-Path $stage "provider.exe"
 $savedEnv = @{ GOOS = $env:GOOS; GOARCH = $env:GOARCH; CGO_ENABLED = $env:CGO_ENABLED; GOFLAGS = $env:GOFLAGS }
 try {
     $env:GOOS = "windows"; $env:GOARCH = "amd64"; $env:CGO_ENABLED = "0"; $env:GOFLAGS = "-mod=readonly"
     Push-Location $work
     if ($NoObfuscate) {
-        Log "building provider.exe (plain, stripped) — NOT obfuscated"
+        Log "building provider.exe (plain, stripped) - NOT obfuscated"
         & go build -trimpath -ldflags "-s -w" -o $exe ./cmd/provider 2>&1 | Tee-Object -FilePath $buildLog
     } else {
         # -literals : encrypt string/number literals (URLs, messages) in the binary
@@ -124,7 +147,7 @@ try {
         Log "building provider.exe with garble (takes 2-4 minutes)"
         & $garble -literals -seed=random build -trimpath -ldflags "-s -w" -o $exe ./cmd/provider 2>&1 | Tee-Object -FilePath $buildLog
     }
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Fail "build failed — see $buildLog" }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Fail "build failed - see $buildLog" }
 } finally {
     Pop-Location
     foreach ($k in $savedEnv.Keys) {
@@ -140,35 +163,48 @@ $leaks = @($env:USERPROFILE, $work, "Vyomanaut_V2/internal/") | Where-Object { $
 if ($leaks -and -not $NoObfuscate) { Fail "provider.exe still contains: $($leaks -join ', ')" }
 Log ("provider.exe built: {0:N1} MB" -f ($bytes.Length / 1MB))
 
-# ── ZeroTier MSI ──────────────────────────────────────────────────────────
+# -- ZeroTier MSI ----------------------------------------------------------
 if (-not $SkipZeroTier) {
     Log "downloading the ZeroTier installer"
     try {
         Invoke-WebRequest -Uri $ZeroTierMsiUrl -OutFile (Join-Path $stage "ZeroTierOne.msi") -UseBasicParsing
     } catch {
-        Write-Host "[build] warning: ZeroTier download failed ($($_.Exception.Message)); the installer will use winget instead" -ForegroundColor Yellow
+        Write-Host "[build] warning: ZeroTier download failed ($($_.Exception.Message)); the installer will send the volunteer to zerotier.com instead" -ForegroundColor Yellow
     }
 }
 
-# ── installer files + config ─────────────────────────────────────────────
+# -- installer files + config ---------------------------------------------
 Copy-Item -Path (Join-Path $TemplateDir "*") -Destination $stage -Recurse -Force
 # Windows needs CRLF in .cmd files (goto/labels misbehave with LF) whatever git checked out.
 Get-ChildItem -Path $stage -Include *.cmd, *.ps1, *.txt -Recurse | ForEach-Object {
     $t = [IO.File]::ReadAllText($_.FullName) -replace "`r?`n", "`r`n"
     [IO.File]::WriteAllText($_.FullName, $t, [Text.Encoding]::ASCII)
 }
+
+$expiresUnix = $null
+if ($ValidDays -gt 0) { $expiresUnix = [int64]([DateTimeOffset]::UtcNow.AddDays($ValidDays).ToUnixTimeSeconds()) }
 [ordered]@{
     version             = $version
     microservice_url    = $MicroserviceUrl
     zerotier_network_id = $NetworkId.ToLower()
     listen_port         = $ListenPort
+    metrics_port        = $MetricsPort
+    metrics_allow_from  = @($MetricsAllowFrom)
     default_storage_gb  = $DefaultStorageGB
     city                = $City
     region              = $Region
+    expires_unix        = $expiresUnix
     mode                = "demo"
 } | ConvertTo-Json | Set-Content -Path (Join-Path $stage "config.json") -Encoding UTF8
 
-# ── zip + hash ────────────────────────────────────────────────────────────
+# -- manifest (installer verifies every file against this) ----------------
+$sumsPath = Join-Path $stage "SHA256SUMS"
+$sumLines = Get-ChildItem -Path $stage -File | Where-Object { $_.Name -ne "SHA256SUMS" } | Sort-Object Name | ForEach-Object {
+    "{0} *{1}" -f (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLower(), $_.Name
+}
+Set-Content -Path $sumsPath -Value $sumLines -Encoding ASCII
+
+# -- zip + hash ------------------------------------------------------------
 $zip = "$stage.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip
@@ -176,10 +212,16 @@ $sha = (Get-FileHash -Algorithm SHA256 $zip).Hash
 Add-Content -Path $buildLog -Value "`ncommit=$commit ref=$Ref version=$version sha256=$sha"
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 
+$expiryText = "never"
+if ($expiresUnix) { $expiryText = [DateTimeOffset]::FromUnixTimeSeconds($expiresUnix).LocalDateTime.ToString("ddd d MMM yyyy, HH:mm") }
+
 Write-Host ""
 Log "DONE"
-Log "bundle : $zip"
-Log "sha256 : $sha"
-Log "log    : $buildLog   (contains the garble seed — keep private)"
+Log "bundle  : $zip"
+Log "sha256  : $sha"
+Log "expires : $expiryText"
+if ($MetricsPort -gt 0) { Log "metrics : port $MetricsPort, readable from $($MetricsAllowFrom -join ', ')" }
+else { Log "metrics : off" }
+Log "log     : $buildLog   (contains the garble seed - keep private)"
 Write-Host ""
-Write-Host "Copy the zip to each provider PC, extract it, right-click Install.cmd -> Run as administrator."
+Write-Host "Copy the zip to each provider PC, extract it, double-click Install.cmd (Yes to the admin prompt)."

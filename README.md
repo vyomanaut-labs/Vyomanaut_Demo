@@ -93,12 +93,21 @@ docs/           → design documents
 ```bash
 git clone https://github.com/vyomanaut-labs/Vyomanaut_Demo.git
 cd Vyomanaut_Demo
-docker-compose -f deployments/dev/docker-compose.yml up
 ```
 
-Demo mode starts a 5-provider network on your laptop. You can see a full upload → audit → repair cycle in under 30 minutes.
+`deployments/dev/docker-compose.yml` only provides the PostgreSQL database; its relay, provider and microservice entries are placeholders. The demo network itself is started by the scripts in `scripts/demo/`:
 
-Follow the guides based on your OS to run it locally: [Guide](./guides/)
+```bash
+docker compose -f deployments/dev/docker-compose.yml up -d postgres
+scripts/demo/up.sh            # macOS/Linux — coordinator + 7 local providers
+.\scripts\demo\up.ps1        # Windows (PowerShell 7)
+```
+
+Demo mode (RS(3,5), compressed timers, mock payments) lets you see a full upload → audit → repair cycle in under 30 minutes.
+
+**Running a live demo with volunteers' PCs?** Providers on Windows install from a one-click bundle — no Go, Git or source code needed on their machines: see [`guides/provider_quick_install.md`](./guides/provider_quick_install.md). Operators: [`guides/operator_windows_guide.md`](./guides/operator_windows_guide.md) or [`guides/operator_unix_guide.md`](./guides/operator_unix_guide.md).
+
+All guides: [`guides/`](./guides/).
 
 ---
 

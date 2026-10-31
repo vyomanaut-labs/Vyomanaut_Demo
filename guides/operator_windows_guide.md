@@ -190,57 +190,69 @@ Turn off sleep for the duration:
 
 ## Part 2 — The private network
 
-Every machine talks over one private network called a tailnet. You own it, so you set it up
-first, before sending anyone their guide.
+Every machine talks over one private ZeroTier network. You own it, so you set it up first,
+before sending anyone a bundle. ZeroTier gives each approved machine a `10.x` address —
+that is what the coordinator, the provider installers and the dashboard all use.
 
-### 2.1 Create it and invite everyone
+### 2.1 Create it
 
-> Sign in at <https://login.tailscale.com/> and create your tailnet
-> **Machines → Add device**, or use **Users → Invite** to send join links
-> Send a link to every teammate lending a machine
+> Sign in at <https://my.zerotier.com/> → **Create A Network**. Copy the 16-character
+> **Network ID** (like `0123456789abcdef`).
+>
+> Under **Access Control** choose **Private**. Leave **IPv4 Auto-Assign** on (Easy Setup
+> gives `10.x` addresses). Nothing else needs changing.
 
-### 2.2 Install and register your own machine
+Private matters: it means every machine has to be approved by you before it can reach the
+coordinator.
 
-```pwsh
-winget install --id Tailscale.Tailscale -e --source winget
-tailscale up
-tailscale ip -4
-```
-
-> Expect an address starting with `100.` — write it down, this is your coordinator address
-
-### 2.3 Make auth keys ready in advance
-
-Do this now, not when someone is stuck.
-
-> Admin console → **Settings → Keys → Generate auth key**
-> Make it reusable, set an expiry that covers your demo day
-
-Some networks — college and office Wi-Fi especially — block the Tailscale login page. A
-teammate on such a network cannot sign in through a browser, but they can join with:
+### 2.2 Install and join from your own machine
 
 ```pwsh
-tailscale up --auth-key=tskey-auth-xxxxxxxxxxxx
+winget install --id ZeroTier.ZeroTierOne -e --source winget
+zerotier-cli join 0123456789abcdef
 ```
 
-Have two or three of these ready to hand out.
+Then tick **Auth** next to your machine in Central → **Members**. Read your address:
+
+```pwsh
+$MyIp = ((zerotier-cli -j listnetworks | ConvertFrom-Json) | Where-Object nwid -eq "0123456789abcdef").assignedAddresses[0].Split("/")[0]
+$MyIp
+```
+
+> Expect an address starting with `10.` — write it down. This is your coordinator address.
+> `zerotier-cli` may need an administrator terminal.
+
+### 2.3 Approving volunteers
+
+Volunteers using the quick installer do not need to do anything before they arrive. When
+their installer reaches the ZeroTier step it shows a box with their **ZeroTier address** (ten
+hex characters) and waits.
+
+> Central → **Members** → a new row appears with that address → tick **Auth**. Their
+> installer continues by itself within a few seconds.
+
+Give each one a name in the **Name** column (their desk or their own name). The dashboard
+helper in 4.3 uses it to label that machine.
+
+> **Approve only people you can see.** The network ID is inside every bundle, so anyone who
+> gets a copy can ask to join. Nothing happens until you tick **Auth**.
 
 ### 2.4 Check who has actually joined
 
-> Admin console → **Machines**
-
-You should see every teammate's machine listed with a green dot and a `100.` address before
-you start. If someone is missing, fix that before going further — nothing else will work
-for them.
+> Central → **Members** — every volunteer's machine should show a green dot and a `10.`
+> address. If someone is missing, fix that first; nothing else works for them without it.
 
 ### 2.5 Open your port
 
-As administrator, once:
+As administrator, once. This limits the coordinator's port to the ZeroTier network instead
+of every network your laptop is on:
 
 ```pwsh
 New-NetFirewallRule -DisplayName "Vyomanaut coordinator" -Direction Inbound `
-  -Protocol TCP -LocalPort 8080 -Action Allow -Profile Any
+  -Protocol TCP -LocalPort 8080 -Action Allow -Profile Any -RemoteAddress 10.0.0.0/8
 ```
+
+> Adjust `10.0.0.0/8` to your network's actual range if you changed it in Central.
 
 ---
 
@@ -250,7 +262,7 @@ New-NetFirewallRule -DisplayName "Vyomanaut coordinator" -Direction Inbound `
 
 ```pwsh
 # ── set once per terminal ────────────────────────────────────────────────
-$MyIp = (tailscale ip -4)
+$MyIp = ((zerotier-cli -j listnetworks | ConvertFrom-Json) | Where-Object nwid -eq "<your network id>").assignedAddresses[0].Split("/")[0]
 
 # ── start and stop the network ───────────────────────────────────────────
 docker compose -f deployments/dev/docker-compose.yml up -d postgres
@@ -262,6 +274,13 @@ docker compose -f deployments/dev/docker-compose.yml up -d postgres
 
 # ── the live console ─────────────────────────────────────────────────────
 & "$env:BIN_DIR\operator.exe" watch --mode=demo --microservice-url=$env:MICROSERVICE_URL --admin-api-key=$env:ADMIN_API_KEY
+
+# ── build the volunteer bundle (see provider_quick_install.md) ────────────
+.\scripts\release\build_provider_bundle.ps1 -MicroserviceUrl "http://${MyIp}:8080" -NetworkId <network id> -ValidDays 2
+
+# ── dashboard targets: keep Prometheus in step with ZeroTier members ─────
+.\scripts\demo\metrics.ps1 -Mode watch -NetworkId <network id>     # needs $env:ZEROTIER_CENTRAL_TOKEN
+.\scripts\demo\metrics.ps1 -Mode add -Ip <their 10.x> -Desk "<name>"  # no token needed
 
 # ── read a teammate's join code (flags BEFORE the phone number) ──────────
 & "$env:BIN_DIR\operator.exe" otp --mode=demo --otp-delivery-log=$env:OTP_LOG +919790000001
@@ -276,7 +295,7 @@ docker compose -f deployments/dev/docker-compose.yml up -d postgres
 
 ```pwsh
 # ── set once per terminal ────────────────────────────────────────────────
-$MSURL     = "http://100.126.233.20:8080"          # the operator's address
+$MSURL     = "http://10.147.17.1:8080"          # the operator's address
 $OwnerDir  = "$env:USERPROFILE\.vyomanaut-owner"
 
 # ── identity and money ───────────────────────────────────────────────────
@@ -305,7 +324,7 @@ $OwnerDir  = "$env:USERPROFILE\.vyomanaut-owner"
 ```pwsh
 cd ~
 git clone https://github.com/vyomanaut-labs/Vyomanaut_Demo.git
-cd .\Vyomanaut_V2\
+cd .\Vyomanaut_Demo\
 ```
 
 Then check it builds:
@@ -336,10 +355,52 @@ docker compose -f deployments/dev/docker-compose.yml up -d postgres
 > The database holds only bookkeeping — who the machines are, which piece went where, the
 > ledger. It never sees the contents of anything.
 
-### 4.3 Start the coordinator
+### 4.3 Start the dashboard (Prometheus + Grafana)
+
+Optional, but it is what lets you watch every volunteer's machine on one screen.
+**Prometheus** collects numbers from the machines; **Grafana** draws them. Bring this up
+**before** 4.4, so the first heartbeat is captured.
 
 ```pwsh
-$MyIp = (tailscale ip -4)
+docker compose -f deployments/observability/docker-compose.yml up -d
+```
+
+- Grafana: <http://localhost:3000> (`admin` / `admin`, "Skip" the password change for a
+  local demo) → **Dashboards → Vyomanaut → "Vyomanaut V2 — Microservice + Provider Daemon
+  Fleet"**.
+- Prometheus targets: <http://localhost:9090/targets>. The `vyomanaut-providers` job starts
+  empty and fills in as machines join (next section).
+
+Each provider installed from the quick-install bundle already serves its metrics to you
+only. You just have to tell Prometheus each machine's address — and the easiest way is to
+let `metrics.ps1` read them from ZeroTier Central, so you never hand-edit JSON:
+
+```pwsh
+# one token, created at my.zerotier.com -> Account -> API Access Tokens
+$env:ZEROTIER_CENTRAL_TOKEN = "<token>"
+# keep the target list in step for the whole bring-up (Ctrl-C to stop)
+.\scripts\demo\metrics.ps1 -Mode watch -NetworkId <your network id>
+```
+
+No token? Add each machine in one line as it joins (no JSON editing):
+
+```pwsh
+.\scripts\demo\metrics.ps1 -Mode add -Ip 10.147.17.5 -Desk "Aryan laptop"
+.\scripts\demo\metrics.ps1 -Mode list
+```
+
+Prometheus reloads within ~15 s; a machine turns green on `/targets` once its provider is
+serving metrics.
+
+> To populate the coordinator's own panels (repair, audit, escrow, DB latency), add
+> `-ExposeMetrics` to the `up.ps1` command in 4.4 — it serves an **unauthenticated**
+> `/metrics` on the coordinator's own port, so only ever on this isolated lab network.
+> There is no turning it on for an already-running coordinator.
+
+### 4.4 Start the coordinator
+
+```pwsh
+$MyIp = ((zerotier-cli -j listnetworks | ConvertFrom-Json) | Where-Object nwid -eq "<your network id>").assignedAddresses[0].Split("/")[0]
 $MyIp
 
 .\scripts\demo\down.ps1
@@ -352,30 +413,47 @@ $MyIp
 > `-Providers 0` means the coordinator starts alone, leaving every slot free for a real
 > machine to join. `-AdvertiseHost` is what the others will dial — pass it explicitly,
 > always. Without it the script guesses which network card to publish, and on a machine
-> running Tailscale alongside ordinary Wi-Fi that guess is a coin flip.
+> running ZeroTier alongside ordinary Wi-Fi that guess is a coin flip.
+
+> If you started the dashboard in 4.3 and want the coordinator's own panels populated, add
+> `-ExposeMetrics` to the command above now — there is no adding it after the fact without
+> a restart.
 
 Save what it prints. **The admin key exists only on this machine and only for this run.**
 
 Sanity check the output before continuing:
 
 ```
-[up.ps1] MICROSERVICE_URL = http://100.126.233.20:8080
+[up.ps1] MICROSERVICE_URL = http://10.147.17.1:8080
 ```
 
-> It must be your `100.` address, not `127.0.0.1`.
+> It must be your `10.` ZeroTier address, not `127.0.0.1`.
 > You should see **no** "onboarding local provider" lines at all with `-Providers 0`.
 
-### 4.4 Give everyone the address
+### 4.5 Build the volunteer bundle and hand it out
 
-Tell your teammates:
+Volunteers do not need your address typed out — it is baked into the bundle they run. Build
+it once the coordinator is up (it needs your `10.x` address and the network ID):
 
+```pwsh
+.\scripts\release\build_provider_bundle.ps1 `
+    -MicroserviceUrl "http://${MyIp}:8080" `
+    -NetworkId <your network id> `
+    -ValidDays 2
 ```
-http://<your 100. address>:8080
-```
 
-They can now start Part 4 of their own guide.
+> Commit and push first — the bundle is built from the public repo, not your working copy.
+> Takes 2–4 minutes. Result: `dist\VyomanautProvider-<date>-<commit>.zip`. Full details,
+> options and the volunteer's side are in `provider_quick_install.md`.
 
-### 4.5 Open the console
+Put the zip on a pendrive or shared folder. Each volunteer: **extract it, double-click
+`Install.cmd`, answer two questions.** Rebuild whenever the coordinator address, network
+or event dates change.
+
+> Volunteers who prefer the manual route (build from source) still use
+> `provider_windows_guide.md` and the address `http://<your 10.x ZeroTier address>:8080`.
+
+### 4.6 Open the console
 
 New pwsh window:
 
@@ -395,6 +473,13 @@ Leave it running. `?` for the legend, `1`–`7` to focus a panel, arrows or `j`/
 ## Part 5 — Bringing machines in
 
 Bring them in **one at a time**, confirming each appears before starting the next.
+
+> Most volunteers use the one-click installer (`provider_quick_install.md`): they just run
+> `Install.cmd` and tell you the last 4 digits of their number. You read back the code (below).
+
+> Running the dashboard from 4.3? Each machine's metrics target appears automatically if you
+> left `metrics.ps1 -Mode watch` running, or add it in one line as it joins:
+> `.\scripts\demo\metrics.ps1 -Mode add -Ip <their 10.x> -Desk "<name>"`.
 
 When a teammate asks for their code, in another pwsh window:
 
@@ -438,7 +523,7 @@ On the owner's machine, once the console says the network is ready.
 ### 6.1 Set up
 
 ```pwsh
-$MSURL    = "http://100.126.233.20:8080"      # the operator's real address
+$MSURL    = "http://10.147.17.1:8080"      # the operator's real address
 $OwnerDir = "$env:USERPROFILE\.vyomanaut-owner"
 ```
 
@@ -590,5 +675,5 @@ Remove-Item -Recurse -Force $env:TEMP\vyomanaut-demo
 | Firewall popup | Expected, once | **Allow** |
 
 > This demo runs over a private mesh network that handles the machine-to-machine
-> connectivity for us. If anyone asks: the connectivity layer is Tailscale's, the storage,
+> connectivity for us. If anyone asks: the connectivity layer is ZeroTier's, the storage,
 > repair, auditing and payment logic on top of it is ours.

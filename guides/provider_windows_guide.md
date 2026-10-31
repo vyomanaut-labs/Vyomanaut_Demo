@@ -273,7 +273,7 @@ zerotier-cli info
 
 ## Part 3 — Every command you will use
 
-All of these run inside pwsh, from the `Vyomanaut_V2` folder. Set the two values at the top
+All of these run inside pwsh, from the `Vyomanaut_Demo` folder. Set the two values at the top
 first — everything else refers to them.
 
 ```pwsh
@@ -315,11 +315,11 @@ cd ~
 git clone https://github.com/vyomanaut-labs/Vyomanaut_Demo.git
 ```
 
-> Already cloned? Just `cd ~\Vyomanaut_V2` and pull the latest:
+> Already cloned? Just `cd ~\Vyomanaut_Demo` and pull the latest:
 
 ```pwsh
 cd ~
-cd .\Vyomanaut_V2\
+cd .\Vyomanaut_Demo\
 git pull
 ```
 
@@ -525,7 +525,7 @@ owner's file survives either way.
 | `401` / `invalid token`, repeating | Your saved membership is from an older run of the network | 4.6 — delete the data folder and join again |
 | Join script never asks for a phone number or code | Same cause: you still have an old data folder | 4.6 |
 | You registered fine (`PENDING_ONBOARDING` appeared), but the operator says you're never sending a heartbeat they'll accept, and your own log shows `microservice returned 400: ... "timestamp skew exceeds 5 minutes"` — you eventually show `DEPARTED` without ever leaving | Your machine's clock, not the network — it's off from the coordinator's by more than 5 minutes. `join.ps1` now checks this itself before onboarding and will warn you if so; if you skipped past that warning or are on an older checkout, this is why. Common on lab/shared desktops where campus Wi-Fi blocks outbound NTP (UDP 123) the same way it can block other ports — see 2.5 | As administrator: `w32tm /resync /force`. If that times out (NTP is blocked), set the clock manually instead — get the operator's `$MSURL`, then: `(Invoke-WebRequest "$MSURL/.well-known/jwks.json" -UseBasicParsing).Headers.Date` gives the coordinator's own clock; `Set-Date` your machine to match, then re-run join.ps1 (no need to delete your data folder — this isn't a stale-registration problem) |
-| `The term '...join.ps1' is not recognized` | Wrong folder | `cd ~\Vyomanaut_V2` first |
+| `The term '...join.ps1' is not recognized` | Wrong folder | `cd ~\Vyomanaut_Demo` first |
 | Script refuses to run, mentions version | You are in Windows PowerShell 5, not pwsh | 1.3 |
 | `zerotier-cli listnetworks` shows `REQUESTING_CONFIGURATION` or `ACCESS_DENIED` | You haven't been authorized in ZeroTier Central yet | Send the operator your address from `zerotier-cli info`, ask them to authorize it — 2.3 |
 | `zerotier-cli listnetworks` prints nothing at all | Not joined | `zerotier-cli join <network-id>` — Part 2 |

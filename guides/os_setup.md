@@ -182,7 +182,7 @@ Once the setup is complete, run:
 cd ~
 git clone https://github.com/vyomanaut-labs/Vyomanaut_Demo.git
 
-cd .\Vyomanaut_V2\
+cd .\Vyomanaut_Demo\
 
 go mod tidy
 go vet ./...

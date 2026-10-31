@@ -1,5 +1,11 @@
 # Provider Guide — macOS
 
+> **Not the event route.** Demo events install providers on **Windows** with the one-click
+> bundle ([provider_quick_install.md](./provider_quick_install.md)) over **ZeroTier**. This
+> macOS guide is the manual, build-from-source route, and its network steps (Part 2) use
+> Tailscale. If the operator's network is ZeroTier, as at events, join it as described in
+> Part 2 of `provider_windows_guide.md` instead of installing Tailscale.
+
 You are lending a Mac to the Vyomanaut demo network. Your machine stores encrypted pieces of
 someone else's file and proves, on demand, that it still has them.
 

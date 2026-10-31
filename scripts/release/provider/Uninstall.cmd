@@ -2,6 +2,7 @@
 rem Vyomanaut provider uninstaller - tells the network you are leaving, then removes everything.
 setlocal
 cd /d "%~dp0"
+title Vyomanaut provider uninstall
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (
